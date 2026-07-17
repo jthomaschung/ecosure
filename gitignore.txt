@@ -1,0 +1,16 @@
+# Never commit credentials
+*.json
+!samples/*.json
+gcreds*.json
+service-account*.json
+token.json
+.env
+.env.*
+
+# Local test artifacts
+dryrun_out/
+*.pdf
+__pycache__/
+*.pyc
+.venv/
+venv/

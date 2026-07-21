@@ -152,6 +152,7 @@ def parse_report(path):
     mode = None            # within a violation: None | "response" | "findings"
     pending_finding = None
     pending_question_prefix = ""
+    pending_priority = None
     finding_phase = "issue"  # within a finding: "issue" (label) then "detail" (observation)
     prev_text_y = None
 
@@ -204,6 +205,23 @@ def parse_report(path):
             i += 1; continue
 
         if section == "actionable":
+            # priority lives in the far-right column (x >= ~490). Capture it here
+            # so it's never mistaken for question text — it can render before its
+            # own row's code, and "Imminent Health Risk" wraps onto two lines.
+            if x0 >= 490:
+                pr = None
+                if txt in PRIORITY_SET:
+                    pr = txt
+                elif txt == "Imminent":
+                    pr = "Imminent Health Risk"
+                elif txt == "Health Risk":
+                    i += 1; continue  # second half of the wrapped priority
+                if pr:
+                    if cur is not None and not cur["priority"]:
+                        cur["priority"] = pr
+                    else:
+                        pending_priority = pr
+                    i += 1; continue
             # start of the summary-list entry on p1 and the detailed entries both
             # use J-codes; here we build violations.
             # A J-code may share a line with the question + priority, or be alone.
@@ -234,9 +252,10 @@ def parse_report(path):
                 # first (wrapped) line, emitted early due to cell centering
                 q = (pending_question_prefix + " " + (rest or "")).strip()
                 cur = {"category": current_category, "code": code,
-                       "question": q, "priority": priority,
+                       "question": q, "priority": priority or pending_priority,
                        "response": None, "findings": [], "photos": []}
                 mode = None; pending_finding = None; pending_question_prefix = ""
+                pending_priority = None
                 i += 1; continue
 
             # ---- body lines ----

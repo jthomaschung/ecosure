@@ -21,9 +21,10 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import supabase_ingest
 
-# Only these senders/subjects — narrow to avoid false matches.
-SEARCH = ('from:trueviewnoreply subject:EcoSure has:attachment '
-          'filename:pdf -label:ecosure-processed newer_than:7d')
+# Match both report emails: EcoSure evaluations and CMX self-assessments.
+# The self-assessment email ships three PDFs; ingest() skips the two subsets.
+SEARCH = ('{subject:EcoSure subject:"Self Assessment Has Been Completed"} '
+          'has:attachment filename:pdf -label:ecosure-processed newer_than:7d')
 PROCESSED_LABEL = "ecosure-processed"
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 

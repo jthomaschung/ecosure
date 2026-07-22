@@ -23,17 +23,44 @@ Usage:
 """
 import os, sys, json, argparse
 from datetime import datetime
-from ecosure_parser import parse_report, validate_parse
+import fitz
+import ecosure_parser
+import selfassess_parser
 
 PHOTO_BUCKET = os.environ.get("ECOSURE_PHOTO_BUCKET", "ecosure-photos")
 PDF_BUCKET = os.environ.get("ECOSURE_PDF_BUCKET", "ecosure-reports")
+
+
+def detect_report_type(path):
+    """Return 'ecosure' | 'self_assessment' | 'subset' | 'unknown'.
+
+    The self-assessment email ships three PDFs; only the full one is ingested,
+    the Non-Compliant and IHR subsets are skipped so nothing is double-counted.
+    """
+    try:
+        txt = fitz.open(path)[0].get_text()
+    except Exception:
+        return "unknown"
+    first = (txt.strip().splitlines() or [""])[0].strip()
+    if first == "Food Safety - Self Assessment":
+        return "self_assessment"
+    if first.startswith("Food Safety - Self Assessment (Non-Compliant") or first == "IHR Violations":
+        return "subset"
+    if "Advisor Id" in txt or "EcoSure" in txt:
+        return "ecosure"
+    return "unknown"
+
+
+def _parser_for(rtype):
+    return selfassess_parser if rtype == "self_assessment" else ecosure_parser
 
 
 def _dt(s):
     """'07/16/2026 03:31:04 PM' -> ISO 8601 (or None)."""
     if not s:
         return None
-    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y"):
+    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y",
+                "%B %d, %Y %I:%M %p", "%B %d, %Y %I:%M:%S %p"):
         try:
             return datetime.strptime(s.strip(), fmt).isoformat()
         except ValueError:
@@ -66,6 +93,9 @@ def build_payload(data, unit, start_iso):
         "manager_name": (data.get("manager") or {}).get("name"),
         "manager_signature_date": _dt((data.get("manager") or {}).get("signature_date")),
         "summary": data.get("summary"),
+        "source": data.get("source", "ecosure"),
+        "assessor": data["evaluation"].get("assessor"),
+        "activity_number": data["evaluation"].get("activity_number"),
     }
     violations = [{
         "category": v["category"], "code": v["code"], "question": v["question"],
@@ -73,7 +103,7 @@ def build_payload(data, unit, start_iso):
     } for v in data["actionable_standards"]]
     detailed = [{
         "category": d["category"], "code": d["code"], "question": d["question"],
-        "answer": d["answer"], "passed": (d["answer"] == "Yes"),
+        "answer": d["answer"], "passed": d.get("passed", d["answer"] == "Yes"),
     } for d in data["detailed_standards"]]
     return assessment, violations, detailed
 
@@ -84,8 +114,16 @@ def photo_path(unit, start_key, code, index, ext):
 
 # --------------------------------------------------------------------------
 def ingest(pdf_path, email_id=None, dry_run=False):
-    data, photos = parse_report(pdf_path)
-    warnings = validate_parse(data, photos)
+    rtype = detect_report_type(pdf_path)
+    if rtype == "subset":
+        print(f"skipping subset report ({os.path.basename(pdf_path)}) — the full report carries everything")
+        return
+    if rtype == "unknown":
+        print(f"!! unrecognized report type, skipping {os.path.basename(pdf_path)}")
+        return
+    parser = _parser_for(rtype)
+    data, photos = parser.parse_report(pdf_path)
+    warnings = parser.validate_parse(data, photos)
     if warnings:
         print("!! parse warnings for", os.path.basename(pdf_path))
         for w in warnings:
@@ -133,7 +171,7 @@ def ingest(pdf_path, email_id=None, dry_run=False):
 
     # 2) upsert the assessment (unique on unit_number+start_datetime)
     res = sb.table("ecosure_assessments").upsert(
-        assessment, on_conflict="unit_number,start_datetime").execute()
+        assessment, on_conflict="unit_number,start_datetime,source").execute()
     assessment_id = res.data[0]["id"]
 
     # 3) replace child rows for a clean re-ingest

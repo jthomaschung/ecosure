@@ -21,10 +21,17 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import supabase_ingest
 
-# Match both report emails: EcoSure evaluations and CMX self-assessments.
-# The self-assessment email ships three PDFs; ingest() skips the two subsets.
-SEARCH = ('{subject:EcoSure subject:"Self Assessment Has Been Completed"} '
-          'has:attachment filename:pdf -label:ecosure-processed newer_than:7d')
+# Match the two food-safety report emails only:
+#   - EcoSure/TrueView evaluations            (subject contains "EcoSure")
+#   - CMX Food Safety self-assessments        (subject: "Food Safety - Self Assessment")
+# Explicitly exclude the Ops self-assessment  (subject contains "Ops"), which is a
+# different survey with no parser here. The self-assessment email ships three PDFs;
+# ingest() keeps the full report and skips the two subsets.
+# NOTE: newer_than is deliberately short for the first live test. Widen it once
+# verified (e.g. newer_than:90d) to backfill history, then settle at 30d.
+SEARCH = ('{subject:EcoSure subject:"Food Safety - Self Assessment"} '
+          '-subject:Ops has:attachment filename:pdf '
+          '-label:ecosure-processed newer_than:3d')
 PROCESSED_LABEL = "ecosure-processed"
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 

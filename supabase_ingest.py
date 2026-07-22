@@ -36,18 +36,24 @@ def detect_report_type(path):
 
     The self-assessment email ships three PDFs; only the full one is ingested,
     the Non-Compliant and IHR subsets are skipped so nothing is double-counted.
+    Titles are matched against the first several non-empty lines (a logo or blank
+    line can push the title off line 0), and unknowns are logged so a genuinely
+    new/unexpected attachment is easy to identify from the run log.
     """
     try:
         txt = fitz.open(path)[0].get_text()
-    except Exception:
+    except Exception as e:
+        print(f"   [detect] could not open PDF: {e}")
         return "unknown"
-    first = (txt.strip().splitlines() or [""])[0].strip()
-    if first == "Food Safety - Self Assessment":
-        return "self_assessment"
-    if first.startswith("Food Safety - Self Assessment (Non-Compliant") or first == "IHR Violations":
-        return "subset"
-    if "Advisor Id" in txt or "EcoSure" in txt:
+    head = [l.strip() for l in txt.splitlines() if l.strip()][:8]
+    for l in head:
+        if l == "Food Safety - Self Assessment":
+            return "self_assessment"
+        if l.startswith("Food Safety - Self Assessment (Non-Compliant") or l == "IHR Violations":
+            return "subset"
+    if "Advisor Id" in txt or "EcoSure" in txt or any(l == "Food Safety Assessment" for l in head):
         return "ecosure"
+    print(f"   [detect] unknown report — first lines: {head[:4]!r}")
     return "unknown"
 
 

@@ -27,11 +27,11 @@ import supabase_ingest
 # Explicitly exclude the Ops self-assessment  (subject contains "Ops"), which is a
 # different survey with no parser here. The self-assessment email ships three PDFs;
 # ingest() keeps the full report and skips the two subsets.
-# NOTE: newer_than is deliberately short for the first live test. Widen it once
-# verified (e.g. newer_than:90d) to backfill history, then settle at 30d.
+# NOTE: full-year backfill window. After the backfill completes, change this to
+# newer_than:30d for steady-state runs.
 SEARCH = ('{subject:EcoSure subject:"Food Safety - Self Assessment"} '
           '-subject:Ops has:attachment filename:pdf '
-          '-label:ecosure-processed newer_than:3d')
+          '-label:ecosure-processed after:2026/01/01')
 PROCESSED_LABEL = "ecosure-processed"
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
@@ -67,22 +67,43 @@ def _pdf_attachments(svc, msg_id):
     return out
 
 
+def _all_message_ids(svc):
+    """Page through every message matching SEARCH (list() returns one page)."""
+    ids, page_token = [], None
+    while True:
+        resp = svc.users().messages().list(
+            userId="me", q=SEARCH, maxResults=500, pageToken=page_token).execute()
+        ids.extend(m["id"] for m in resp.get("messages", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return ids
+
+
 def run():
     svc = _service()
     label_id = _ensure_label(svc)
-    msgs = svc.users().messages().list(userId="me", q=SEARCH).execute().get("messages", [])
-    print(f"{len(msgs)} EcoSure message(s) to process")
-    for m in msgs:
-        mid = m["id"]
-        for fn, blob in _pdf_attachments(svc, mid):
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-                tf.write(blob); path = tf.name
-            try:
-                supabase_ingest.ingest(path, email_id=mid)
-            finally:
-                os.unlink(path)
-        svc.users().messages().modify(
-            userId="me", id=mid, body={"addLabelIds": [label_id]}).execute()
+    msg_ids = _all_message_ids(svc)
+    print(f"{len(msg_ids)} message(s) to process")
+    ok = failed = 0
+    for mid in msg_ids:
+        try:
+            for fn, blob in _pdf_attachments(svc, mid):
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+                    tf.write(blob); path = tf.name
+                try:
+                    supabase_ingest.ingest(path, email_id=mid)
+                finally:
+                    os.unlink(path)
+            # only label processed if the whole message handled without error,
+            # so a transient failure is retried on the next run instead of lost
+            svc.users().messages().modify(
+                userId="me", id=mid, body={"addLabelIds": [label_id]}).execute()
+            ok += 1
+        except Exception as e:
+            failed += 1
+            print(f"!! error on message {mid}: {e} (left unlabeled for retry)")
+    print(f"done: {ok} message(s) processed, {failed} failed/left for retry")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,8 @@
 name: EcoSure ingest
-
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 min, UTC
-  workflow_dispatch: {}       # lets you run it manually from the Actions tab
+    - cron: "0 9 * * *"   # 9:00 UTC = 1:00 AM PST
+  workflow_dispatch: {}
 
 # prevent two runs from overlapping
 concurrency:

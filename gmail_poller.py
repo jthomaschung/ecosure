@@ -68,11 +68,31 @@ def _pdf_attachments(svc, msg_id):
 
 
 def _all_message_ids(svc):
-    """Page through every message matching SEARCH (list() returns one page)."""
+    """Page through every message matching SEARCH (list() returns one page).
+
+    includeSpamTrash=True is load-bearing, not defensive.
+
+    Gmail search excludes Trash and Spam by default. These assessment emails
+    arrive in volume — several a day across the fleet — and get cleared out of
+    the inbox by hand, often the same day. This job runs once daily at 09:02
+    UTC, so anything deleted before that run was invisible to it and silently
+    never ingested.
+
+    That is what stopped ingestion after 2026-09-27: the job kept running and
+    kept reporting "0 message(s) to process" while nine days of assessments sat
+    in Trash. A clean success with nothing to show is the worst failure mode
+    there is, because nothing alerts on it.
+
+    Note Gmail purges Trash after 30 days, so a message deleted and then purged
+    before a run is gone for good. The ecosure-processed label and
+    email_message_id in the database still prevent double-ingestion of anything
+    already handled.
+    """
     ids, page_token = [], None
     while True:
         resp = svc.users().messages().list(
-            userId="me", q=SEARCH, maxResults=500, pageToken=page_token).execute()
+            userId="me", q=SEARCH, maxResults=500, pageToken=page_token,
+            includeSpamTrash=True).execute()
         ids.extend(m["id"] for m in resp.get("messages", []))
         page_token = resp.get("nextPageToken")
         if not page_token:

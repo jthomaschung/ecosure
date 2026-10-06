@@ -35,7 +35,8 @@ Overall row. Daypart and Additional Compliance Areas carry findings/repeats
 but no score — they are kept in the jsonb detail and have no wide column.
 """
 import re
-import subprocess
+
+import fitz  # PyMuPDF
 
 # Department name in the PDF -> column in the score tables.
 # Daypart and Additional Compliance Areas have no score and no column; they
@@ -81,20 +82,28 @@ class NotAnOpsAssessment(ValueError):
     """
 
 
-def _text(path, layout=True):
-    """pdftotext -layout: the summary table only parses with layout preserved.
+def _text(path):
+    """Page 1 text with layout preserved, via PyMuPDF.
 
-    Without -layout the columns interleave with the labels and the numbers
-    cannot be attributed to a row.
+    PyMuPDF rather than pdftotext deliberately: the GitHub runner installs
+    only pip packages, and poppler-utils is not among them. The repo already
+    depends on pymupdf for the EcoSure parsers, so this adds no new system
+    dependency.
+
+    sort=True orders blocks top-to-bottom, left-to-right, which keeps each
+    summary row's label and its three numbers on one line. Without it the
+    two-column header interleaves and the numbers cannot be attributed to a
+    department.
     """
-    cmd = ["pdftotext"]
-    if layout:
-        cmd.append("-layout")
-    cmd += ["-f", "1", "-l", "1", str(path), "-"]
-    out = subprocess.run(cmd, capture_output=True, timeout=60)
-    if out.returncode != 0:
-        raise NotAnOpsAssessment(f"pdftotext failed: {out.stderr[:200]!r}")
-    return out.stdout.decode("utf-8", errors="replace")
+    try:
+        with fitz.open(str(path)) as doc:
+            if doc.page_count < 1:
+                raise NotAnOpsAssessment("empty PDF")
+            return doc[0].get_text("text", sort=True)
+    except NotAnOpsAssessment:
+        raise
+    except Exception as e:
+        raise NotAnOpsAssessment(f"could not read PDF: {e}") from e
 
 
 def report_type(text):

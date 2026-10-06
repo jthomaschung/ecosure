@@ -18,7 +18,11 @@ not collide with each other.
 import os
 import json
 
-from ops_parser import parse_report, validate, NotAnOpsAssessment, TABLE_FOR_KIND
+from ops_parser import (parse_report, validate, NotAnOpsAssessment,
+                        TABLE_FOR_KIND, DEPARTMENT_COLUMNS)
+
+# Columns holding a score, all stored as fractions.
+SCORE_COLUMNS = set(DEPARTMENT_COLUMNS.values()) | {"overall_score"}
 
 
 def ingest_ops(pdf_path, email_id=None, dry_run=False):
@@ -49,6 +53,20 @@ def ingest_ops(pdf_path, email_id=None, dry_run=False):
     # jsonb column — the client sends it as a JSON value, not a string.
     row["departments"] = row.get("departments") or []
 
+    # SCORES ARE STORED AS FRACTIONS, NOT PERCENTAGES.
+    #
+    # The columns are numeric(6,4) / numeric(8,6) and every existing row from
+    # the Tableau scraper holds 0.9161 for 91.61%. The PDF prints 91.61, so it
+    # must be divided by 100 before writing — otherwise email-sourced rows
+    # would be 100x the scraped ones on the same page, and numeric(6,4) would
+    # overflow on anything above 99.9999 anyway.
+    #
+    # The jsonb detail keeps the PDF's own percentages, unscaled, because it
+    # is read by humans rather than joined against these columns.
+    for col in list(SCORE_COLUMNS):
+        if row.get(col) is not None:
+            row[col] = round(row[col] / 100.0, 6)
+
     if dry_run:
         print(f"[dry-run] {kind} -> {table}")
         print(json.dumps(row, indent=2, default=str))
@@ -58,15 +76,24 @@ def ingest_ops(pdf_path, email_id=None, dry_run=False):
     sb = create_client(os.environ["SUPABASE_URL"],
                        os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
-    if row.get("activity_number"):
-        sb.table(table).upsert(row, on_conflict="activity_number").execute()
-    else:
-        # No activity number means the PDF header did not carry one. Insert
-        # rather than upsert — there is no safe key to merge on, and a bad
-        # merge would overwrite a good row.
-        sb.table(table).insert(row).execute()
+    # Conflict target is (store_number, audit_date), NOT activity_number.
+    #
+    # Both tables already carry `unique (store_number, audit_date)` from when
+    # the Tableau scraper was the only writer. An insert keyed on anything
+    # else still trips that constraint, so an email-sourced row for a store
+    # the scraper already covered would fail rather than update it.
+    #
+    # Upserting on the existing key means the email row REPLACES the scraped
+    # one for the same store and day, which is what we want: it carries the
+    # activity number, assessor, findings and repeats the scrape never had.
+    #
+    # The trade-off: a store assessed twice in one day collapses to one row.
+    # That is the behaviour the scraper already had, so this is not a
+    # regression — but activity_number is now stored, so the duplicates are
+    # visible and the key can be tightened later if it matters.
+    sb.table(table).upsert(row, on_conflict="store_number,audit_date").execute()
 
     print(f"   {kind}: store {row['store_number']} "
-          f"{row['audit_date']} {row['overall_score']}% "
+          f"{row['audit_date']} {row['overall_score'] * 100:.2f}% "
           f"({row['overall_findings']} findings, {row['overall_repeats']} repeats) "
           f"-> {table}")

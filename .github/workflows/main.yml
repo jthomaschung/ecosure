@@ -1,38 +1,63 @@
-name: EcoSure ingest
+name: cmx-survey
+
 on:
-  schedule:
-    - cron: "0 9 * * *"   # 9:00 UTC = 1:00 AM PST
+  # SCHEDULED RUN REMOVED 2026-10-06.
+  #
+  # These department scores now come from the CMX "Ops Assessment" and
+  # "Ops Self-Assessment" emails, parsed in the ecosure repo. Those PDFs carry
+  # Findings and Repeats per department, which this Tableau crosstab never
+  # exposed, plus the CMX activity number and the assessor.
+  #
+  # The scrape was not merely redundant, it was actively harmful. The
+  # dashboard serves whatever period its default filter is on and this bot
+  # never set that filter, so once the fiscal period rolled it re-downloaded
+  # the same pre-October crosstab every morning — 367 identical rows upserted
+  # daily, every run green, nothing new in the database for days. Left running
+  # alongside the email path it would overwrite fresh email rows with stale
+  # scraped ones for the same store and date.
+  #
+  # It also recorded the audit date a day or two later than the PDF does
+  # (submission date rather than assessment date), which produced duplicate
+  # rows the store+date key could not merge.
+  #
+  # Kept runnable BY HAND so the email path can be cross-checked if its
+  # numbers are ever doubted. If you are about to restore the cron: the
+  # period-filter problem above is still unsolved, so fix that first.
   workflow_dispatch: {}
 
-# prevent two runs from overlapping
-concurrency:
-  group: ecosure-ingest
-  cancel-in-progress: false
-
 jobs:
-  ingest:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
+    env:
+      PORTAL_URL: ${{ secrets.PORTAL_URL }}
+      GUEST_USERNAME: ${{ secrets.GUEST_USERNAME }}
+      GUEST_PASSWORD: ${{ secrets.GUEST_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      HEADLESS: "false"
+      SURVEY_TAB_ABS_X: "890"
+      SURVEY_TAB_ABS_Y: "251"
+      FBC_TAB_ABS_X: "1105"
+      FBC_TAB_ABS_Y: "251"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-
-      - run: pip install -r requirements.txt
-
-      # service-account JSON is stored as a secret; write it to a file
-      - name: Write Google credentials
-        run: printf '%s' "$GOOGLE_CREDENTIALS_JSON" > /tmp/gcreds.json
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-
-      - name: Run poller
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcreds.json
-        run: python gmail_poller.py
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: playwright install --with-deps chromium
+      - name: Run pipeline under virtual display
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" python run_pipeline.py
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-downloads
+          path: downloads/
+          if-no-files-found: ignore

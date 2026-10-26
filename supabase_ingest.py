@@ -49,7 +49,18 @@ def detect_report_type(path):
     for l in head:
         if l == "Food Safety - Self Assessment":
             return "self_assessment"
-        if l.startswith("Food Safety - Self Assessment (Non-Compliant") or l == "IHR Violations":
+
+        # Subsets, skipped so nothing is double-counted. Note the TWO
+        # spellings: the self-assessment email titles its subset
+        # "Food Safety - Self Assessment (Non-Compliant Report)" with hyphens,
+        # while the EcoSure email titles its own
+        # "Food Safety Assessment (Non-Compliant Report)" without. Only the
+        # first was matched, so the EcoSure variant fell through to "unknown"
+        # and logged an error on every run for stores 930, 965, 1002 and 4330.
+        #
+        # Matched on the "(Non-Compliant" fragment rather than either full
+        # title, so a third wording does not reopen the same hole.
+        if "(Non-Compliant" in l or l == "IHR Violations":
             return "subset"
     if "Advisor Id" in txt or "EcoSure" in txt or any(l == "Food Safety Assessment" for l in head):
         return "ecosure"

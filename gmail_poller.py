@@ -20,7 +20,7 @@ import os, sys, base64, tempfile
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import supabase_ingest
-from ops_ingest import ingest_ops
+from ops_ingest import ingest_ops, DuplicateAssessment
 from ops_parser import NotAnOpsAssessment
 
 # Match the two food-safety report emails only:
@@ -129,6 +129,11 @@ def _process(svc, label_id, msg_ids, handler, what):
     handler-declared skip) is not a failure: the Ops emails carry a "Report
     Tags" PDF alongside the assessment, and skipping it is the correct
     outcome, not an error.
+
+    DuplicateAssessment is a skip for the same reason. It means the row is
+    already stored under a different key, so retrying tomorrow produces the
+    identical 23505 and a red run every morning until someone intervenes. The
+    skip is printed, so it stays visible in the log without failing the job.
     """
     ok = failed = skipped = 0
     for mid in msg_ids:
@@ -141,7 +146,7 @@ def _process(svc, label_id, msg_ids, handler, what):
                     try:
                         handler(path, mid)
                         handled_any = True
-                    except NotAnOpsAssessment as e:
+                    except (NotAnOpsAssessment, DuplicateAssessment) as e:
                         skipped += 1
                         print(f"   skip {fn}: {e}")
                 finally:

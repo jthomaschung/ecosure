@@ -21,6 +21,29 @@ import json
 from ops_parser import (parse_report, validate, NotAnOpsAssessment,
                         TABLE_FOR_KIND, DEPARTMENT_COLUMNS)
 
+class DuplicateAssessment(ValueError):
+    """This assessment is already stored under a different key.
+
+    Raised on a 23505 from the unique index on activity_number. A duplicate is
+    not a transient failure: retrying can only fail again, so the caller labels
+    the message and moves on instead of redoing the same insert every morning
+    and exiting non-zero.
+
+    Seeing one means two writers disagree about which store an activity belongs
+    to. Check ACTIVITY_STORE_FIX in ops_parser.
+    """
+
+
+def _is_duplicate_key(err):
+    """True for a Postgres unique-violation (23505) surfaced by postgrest."""
+    code = getattr(err, "code", None)
+    if code is None:
+        args = getattr(err, "args", ()) or ()
+        if args and isinstance(args[0], dict):
+            code = args[0].get("code")
+    return str(code) == "23505" or "23505" in str(err)
+
+
 # Columns holding a score, all stored as fractions.
 SCORE_COLUMNS = set(DEPARTMENT_COLUMNS.values()) | {"overall_score"}
 
@@ -91,7 +114,16 @@ def ingest_ops(pdf_path, email_id=None, dry_run=False):
     # That is the behaviour the scraper already had, so this is not a
     # regression — but activity_number is now stored, so the duplicates are
     # visible and the key can be tightened later if it matters.
-    sb.table(table).upsert(row, on_conflict="store_number,audit_date").execute()
+    try:
+        sb.table(table).upsert(row, on_conflict="store_number,audit_date").execute()
+    except Exception as e:
+        if _is_duplicate_key(e):
+            raise DuplicateAssessment(
+                f"activity {row.get('activity_number')} is already stored under a "
+                f"different store/date than this PDF's "
+                f"({row.get('store_number')} {row.get('audit_date')}) — "
+                f"see ACTIVITY_STORE_FIX in ops_parser") from e
+        raise
 
     print(f"   {kind}: store {row['store_number']} "
           f"{row['audit_date']} {row['overall_score'] * 100:.2f}% "

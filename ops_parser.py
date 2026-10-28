@@ -73,6 +73,26 @@ MONTHS = {m: i for i, m in enumerate(
      "August", "September", "October", "November", "December"], start=1)}
 
 
+# CMX FILED THESE ACTIVITIES UNDER THE WRONG STORE.
+#
+# Keyed on activity number, never on store number, so a correction touches
+# exactly the one assessment and leaves the misfiled store's own reports alone.
+#
+# This is not cosmetic. The same activity can reach the database twice — once
+# from the PDF (which prints the store the assessor actually visited) and once
+# from any other writer keyed on CMX's own store field. When the two disagree,
+# the unique index on activity_number raises 23505 and the message fails every
+# run forever. Correcting at parse time makes every writer agree.
+#
+# Ask whoever reports one whether CMX can re-key the activity at source; an
+# entry here works around someone else's data-entry error, so this dict should
+# shrink over time, not grow.
+ACTIVITY_STORE_FIX = {
+    # activity number -> the store the assessment was actually conducted at
+    "31211767": 1355,   # CMX filed under 1261; conducted at 1355 (Michelle Price, 10/16/2026)
+}
+
+
 class NotAnOpsAssessment(ValueError):
     """The PDF is not an Ops Assessment report.
 
@@ -151,6 +171,13 @@ def _parse_header(text):
         if m and m.group(1) != header.get("activity_number"):
             header["store_number"] = int(m.group(1))
             break
+
+    act = header.get("activity_number")
+    fixed = ACTIVITY_STORE_FIX.get(act)
+    if fixed is not None and header.get("store_number") != fixed:
+        print(f"   activity {act}: store {header.get('store_number')} -> {fixed} "
+              f"(known CMX misfile)")
+        header["store_number"] = fixed
 
     return header
 
